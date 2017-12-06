@@ -1,0 +1,44 @@
+#!/bin/bash -l
+#PBS -l mem=2gb
+#PBS -l nodes=1:ppn=1
+#PBS -l walltime=00:30:00
+
+SOURCEDIR="${HOME}/programmi/macs2.1/runs/epigenome"
+DESTDIR="${TMPDIR}/narrowPeakMetadata"
+ODIR="${HOME}/programmi/macs2.1/runs2"
+
+
+TIMESTAMP=`date +%s`
+FILELIST=${TMPDIR}/roadmapNarrowPeakMetadata.${TIMESTAMP}.filelist.txt
+
+rm -r ${DESTDIR}
+mkdir ${DESTDIR}
+
+ls ${SOURCEDIR} | grep \\\.pp | xargs -I {} -- sh -c "cp ${SOURCEDIR}/{}/test_peaks.narrowPeak ${DESTDIR}/{}"
+
+echo "Storing FileList into ${FILELIST}"
+ls ${DESTDIR} > ${FILELIST}
+
+while read LINE; do  
+	echo "Working with ${LINE} narrowPeak data"
+	SED=$(echo ${LINE} | sed 's/__/\t/g')
+
+	echo "  add metadata using awk"
+	awk -v sed="${SED}" '{print $0 "\t" sed}' ${DESTDIR}/${LINE} > ${DESTDIR}/${LINE}.narrowPeak.metadata
+
+	echo "  remove original file"
+	rm ${DESTDIR}/${LINE}
+done < ${FILELIST}
+
+echo "Create tar.gz archive file"
+cd ${DESTDIR}/..
+tar -czf ${ODIR}/narrowPeakMetadata.${TIMESTAMP}.tar.gz narrowPeakMetadata/*
+
+# Cleanup my temporary space:
+# Make sure that I am still in my temporary space:
+
+cd ${TMPDIR}
+
+# Delete everything
+
+/bin/rm -r *

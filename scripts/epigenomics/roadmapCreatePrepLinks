@@ -1,0 +1,35 @@
+#!/bin/bash -l
+#PBS -l mem=2gb
+#PBS -l nodes=1:ppn=1
+#PBS -l walltime=100:00:00
+
+TIMESTAMP=`date +%s`
+FILELIST=${TMPDIR}/roadmapCreatePrepLinks.${TIMESTAMP}.filelist.txt
+
+EPIGENOME_DIR="/projects3/mlg/IB2/creggian/epigenome/release9/sample-experiment"
+
+cd ${EPIGENOME_DIR}
+
+echo "Storing FileList into ${FILELIST}"
+find `pwd` -name *.gz | grep -v "gz\.fixed\.gz$" > ${FILELIST}
+
+while read LINE; do           
+	BASENAME=`basename ${LINE}`
+	DIRNAME=`dirname ${LINE}`
+
+	cd ${DIRNAME}
+	if [ -f "${BASENAME}.fixed.gz" ]; then
+		ln -s ${BASENAME}.fixed.gz ${BASENAME}.pp
+	else
+		ln -s ${BASENAME} ${BASENAME}.pp
+	fi
+done < ${FILELIST}
+
+# Cleanup my temporary space:
+# Make sure that I am still in my temporary space:
+
+cd ${TMPDIR}
+
+# Delete everything
+
+/bin/rm -r *

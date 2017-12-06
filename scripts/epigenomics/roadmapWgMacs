@@ -1,0 +1,119 @@
+#!/bin/bash -l
+#PBS -l mem=8gb
+#PBS -l nodes=1:ppn=1
+#PBS -l walltime=100:00:00
+
+# Usage:
+# qsub -N FE_4me1_4me3_27ac -v TISSUE_LIST=Fetal_Brain,MARKER_GREP_STRING="Histone_H3K4me1\\\|Histone_H3K4me3\\\|Histone_H3K27ac" roadmapWgMacs
+
+#TISSUE_LIST="Brain_Hippocampus_Middle"
+#TISSUE_LIST="*"
+#MARKER_GREP_STRING="Histone_H3K27ac\|Histone_H3K27me3\|Histone_H3K4me1\|Histone_H3K4me3\|Histone_H3K9ac\|Histone_H3K9me3\|Chromatin_Accessibility"
+#MARKER_GREP_STRING="Histone_H3K4me1\|Histone_H3K4me3\|Histone_H3K27ac"
+
+echo "Parameters:"
+echo "  MARKER_GREP_STRING=${MARKER_GREP_STRING}"
+echo "  TISSUE_LIST=${TISSUE_LIST}"
+
+echo ""
+
+mkdir ${TMPDIR}/epigenome
+echo "Created: ${TMPDIR}/epigenome/"
+
+cd ${HOME}/epigenome/
+for TISSUE in ${TISSUE_LIST}; do
+
+	TTISSUE="${TMPDIR}/epigenome/${TISSUE}"
+	mkdir ${TTISSUE}
+	echo "Created: ${TTISSUE}"
+
+	echo "Epigenome tissue: ${TISSUE}"
+	cd ${HOME}/epigenome/${TISSUE}
+	if [ -d "${HOME}/epigenome/${TISSUE}/ChIP-Seq_Input" ]; then
+	
+		mkdir ${TTISSUE}/ChIP-Seq_Input
+		echo ""
+		echo "  Created: ${TTISSUE}/ChIP-Seq_Input"
+
+		# wg unzipping step for the input
+		echo "  ChIP-Seq_Input folder"
+		cd ${HOME}/epigenome/${TISSUE}
+		for INPUT_GZ in `cd ChIP-Seq_Input; ls *.pp`; do
+			# unzip the input file
+			cd ${HOME}/epigenome/${TISSUE}/ChIP-Seq_Input
+
+			BASENAME=`basename ${INPUT_GZ}`
+			echo -n "    Unzip to BED ${BASENAME}:  "
+			zcat ${INPUT_GZ} > ${TTISSUE}/ChIP-Seq_Input/${INPUT_GZ}.bed
+			echo "OK"
+		done
+
+		# wg unzipping step for markers
+		cd ${HOME}/epigenome/${TISSUE}
+		for MARKER in `ls | grep -i "${MARKER_GREP_STRING}"`; do
+		
+			mkdir ${TTISSUE}/${MARKER}
+			echo ""
+			echo "  Created: ${TTISSUE}/${MARKER}"
+
+			echo "  ${MARKER} folder"
+			cd ${HOME}/epigenome/${TISSUE}
+			for TREATMENT_GZ in `cd ${MARKER}; ls *.pp`; do
+				cd ${HOME}/epigenome/${TISSUE}/${MARKER}
+
+				BASENAME=`basename ${TREATMENT_GZ}`
+				echo -n "    Unzip to BED ${BASENAME}:  "
+				zcat ${TREATMENT_GZ} > ${TTISSUE}/${MARKER}/${TREATMENT_GZ}.bed
+				echo "OK"
+			done
+		done
+
+		# MACS2
+		echo "  MACS2 jobs"
+		cd ${TTISSUE}
+		for INPUT in `cd ChIP-Seq_Input; ls *.bed`; do
+			# use MACS2 to compare each marker with the unzipped input
+			cd ${TTISSUE}
+			for MARKER in `ls | grep -i "${MARKER_GREP_STRING}"`; do
+				cd ${TTISSUE}
+				for TREATMENT in `cd ${MARKER}; ls *.bed`; do
+				OUTDIR="${TISSUE}__${MARKER}__${TREATMENT}__${INPUT}"
+				OUTDIR_FULL="${HOME}/programmi/macs2.1/runs/epigenome/${OUTDIR}"
+
+				# check if OUTDIR_FULL does not exists or empty
+				if [ ! -d "${OUTDIR_FULL}" ] || ! test "$(ls -A "${OUTDIR_FULL}")"; then
+						echo "    Submitting ${OUTDIR_FULL}"
+
+						# if OUTDIR_FULL exists but empty, remove it
+						if [ -d "${OUTDIR_FULL}" ]; then
+							echo "    Removing ${OUTDIR} (empty)"
+							rm -r "${OUTDIR_FULL}/"
+						fi
+
+						mkdir "${OUTDIR_FULL}"
+						echo "    ${OUTDIR_FULL} created"
+
+						macs2 callpeak -t ${TTISSUE}/${MARKER}/${TREATMENT} \
+							-c ${TTISSUE}/ChIP-Seq_Input/${INPUT} \
+							--outdir ${HOME}/programmi/macs2.1/runs/epigenome/${OUTDIR} \
+							-f BED -g hs -n test -q 0.01 --verbose 3
+					fi
+				done
+			done
+		done
+	else
+			echo "${HOME}/epigenome/${TISSUE} has no 'ChIP-Seq_Input' folder"
+	fi
+
+	echo "Remove ${TTISSUE} folder"
+	rm -r ${TTISSUE}
+done
+
+# Cleanup my temporary space:
+# Make sure that I am still in my temporary space:
+
+cd ${TMPDIR}
+
+# Delete everything
+
+/bin/rm -r *

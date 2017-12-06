@@ -1,0 +1,58 @@
+#!/bin/bash -l
+#PBS -l mem=2gb
+#PBS -l nodes=1:ppn=1
+#PBS -l walltime=100:00:00
+
+TIMESTAMP=`date +%s`
+FILELIST=${TMPDIR}/integrityRoadmapGzToFixedGz.${TIMESTAMP}.filelist.txt
+
+EPIGENOME_DIR="/projects3/mlg/IB2/creggian/epigenome/release9/sample-experiment"
+N_HEAD_TAIL="1000"
+HASHFUNC="sha512sum"
+
+cd ${EPIGENOME_DIR}
+
+echo "Storing FileList into ${FILELIST}"
+find `pwd` -name *.gz | xargs -I {} -- sh -c "echo -n -e '{}\t'; zcat {} | head -n 1 | awk '{print NF}'" | grep 5$ | cut -f1 > ${FILELIST}
+
+while read LINE; do           
+    echo "File: ${LINE}"
+	echo "  check .fixed.gz file integrity with gunzip -t"
+	gunzip -tv ${LINE}.fixed.gz 2>&1
+
+	echo -n "  compare ${HASHFUNC} of first ${N_HEAD_TAIL} lines (first three columns only):  "
+	GZSHA=`zcat ${LINE} | head -n ${N_HEAD_TAIL} | awk '{print \$1 "\t" \$2 "\t" \$3}' | ${HASHFUNC}`
+	FIXEDGZSHA=`zcat ${LINE}.fixed.gz | head -n ${N_HEAD_TAIL} | awk '{print \$1 "\t" \$2 "\t" \$3}' | ${HASHFUNC}`
+	if [ "${GZSHA}" == "${FIXEDGZSHA}" ]; then
+		echo "success"
+	else
+		echo "FAIL"
+	fi
+
+	echo -n "  compare ${HASHFUNC} of the last ${N_HEAD_TAIL} lines (first three columns only):  "
+	GZSHA=`zcat ${LINE} | tail -n ${N_HEAD_TAIL} | awk '{print \$1 "\t" \$2 "\t" \$3}' | ${HASHFUNC}`
+	FIXEDGZSHA=`zcat ${LINE}.fixed.gz | tail -n ${N_HEAD_TAIL} | awk '{print \$1 "\t" \$2 "\t" \$3}' | ${HASHFUNC}`
+	if [ "${GZSHA}" == "${FIXEDGZSHA}" ]; then
+		echo "success"
+	else
+		echo "FAIL"
+	fi
+
+	echo -n "  compare number on lines:  "
+	GZWCL=`zcat ${LINE} | wc -l`
+	FIXEDWCL=`zcat ${LINE}.fixed.gz | wc -l`
+        if [ "${GZSHA}" == "${FIXEDGZSHA}" ]; then
+                echo "success"
+        else
+                echo "FAIL"
+        fi
+done < ${FILELIST}
+
+# Cleanup my temporary space:
+# Make sure that I am still in my temporary space:
+
+cd ${TMPDIR}
+
+# Delete everything
+
+/bin/rm -r *
