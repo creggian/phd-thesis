@@ -1,0 +1,184 @@
+#!/bin/bash
+## pipeline from PMID26060301
+
+SRA="$1"          #
+WDIR="$2"         # string, full path
+ODIR="$3"         # output folder, full path
+GENOMEDIR="$4"    # star genomedir, ${WORKDIR}/GEO/GSE67835/genome/star-genome
+GFF_HTFS="$5"     # HTFS gff
+GFF_UCSCFEB="$6"  # UCSC FE B gff
+
+cd ${WDIR}
+rm -r ${SRA}
+mkdir ${SRA}
+cd ${WDIR}/${SRA}
+
+echo "Loaded paramters:"
+echo "  SRA:          " ${SRA}
+echo "  WORKDIR:      " ${WDIR}
+echo "  ODIR:         " ${ODIR}
+echo "  GENOMEDIR:    " ${GENOMEDIR}
+echo "  GFF_HTFS:     " ${GFF_HTFS}
+echo "  GFF_UCSCFEB:  " ${GFF_UCSCFEB}
+
+echo "Load java module"
+module load Java/1.8.0_121
+java -version
+
+echo "Running fastq-dump"
+fastq-dump --split-files ${SRA}
+
+echo "Check exists fastq files"
+ls -l
+
+## preprocessing with Prinseq
+prinseq-lite.pl \
+    -min_len 30 \
+    -trim_left 10 \
+    -trim_qual_right 25 \
+    -lc_method entropy \
+    -lc_threshold 65 \
+    -out_good "fastq_prinseq" \
+    -out_bad "prinseq_bad" \
+    -fastq ${SRA}_1.fastq \
+    -fastq2 ${SRA}_2.fastq
+
+echo "Check exist prinseq-lite files"
+ls -l fastq_prinseq_1.fastq
+ls -l fastq_prinseq_2.fastq
+
+## preprocessing with FASTQC
+## https://www.epigenesys.eu/images/stories/protocols/pdf/20150303161357_p67.pdf
+mkdir -p qa/raw
+fastqc -o qa/raw -t 1 fastq_prinseq_1.fastq fastq_prinseq_2.fastq
+
+unzip -d qa/raw qa/raw/fastq_prinseq_1_fastqc.zip
+unzip -d qa/raw qa/raw/fastq_prinseq_2_fastqc.zip
+OVER_SEQ_1=`sed -e '/>>Over/,/>>END_MODULE/!d' qa/raw/fastq_prinseq_1_fastqc/fastqc_data.txt | grep "^[A-Z]" | awk '{print "-a", $1}' | paste -s -d" "`
+OVER_SEQ_2=`sed -e '/>>Over/,/>>END_MODULE/!d' qa/raw/fastq_prinseq_2_fastqc/fastqc_data.txt | grep "^[A-Z]" | awk '{print "-A", $1}' | paste -s -d" "`
+
+rm fastq_final_1.fastq fastq_final_2.fastq
+ln -s fastq_prinseq_1.fastq fastq_final_1.fastq
+ln -s fastq_prinseq_2.fastq fastq_final_2.fastq
+
+if [ "`echo "$OVER_SEQ_1" | wc -c`" -gt "1" ] || [ "`echo "$OVER_SEQ_2" | wc -c`" -gt "1" ]; then
+    ## http://cutadapt.readthedocs.io/en/stable/guide.html#multiple-adapters
+    cutadapt \
+        -e 0.15 -m 30 \
+        `echo "$OVER_SEQ_1"` \
+        `echo "$OVER_SEQ_2"` \
+        -o fastq_prinseq_cutadapt_1.fastq \
+        -p fastq_prinseq_cutadapt_2.fastq \
+        fastq_final_1.fastq \
+        fastq_final_2.fastq
+
+    ## Filter out oprhan reads => http://prinseq.sourceforge.net/manual.html
+    prinseq-lite.pl \
+        -min_len 30 \
+        -out_good "fastq_prinseq2" \
+        -out_bad "prinseq_bad2" \
+        -fastq fastq_prinseq_cutadapt_1.fastq \
+        -fastq2 fastq_prinseq_cutadapt_2.fastq
+
+    rm fastq_final_1.fastq fastq_final_2.fastq
+    ln -s fastq_prinseq2_1.fastq fastq_final_1.fastq  # update the link    
+    ln -s fastq_prinseq2_2.fastq fastq_final_2.fastq  # update the link
+fi
+
+echo "Check file list after (optionally) cutadapt"
+ls -l
+
+mkdir galore
+trim_galore --paired --nextera --stringency 1 -o ./galore fastq_final_1.fastq fastq_final_2.fastq
+
+echo "Check exist trim_galore files"
+ls -l galore/
+
+## alignment with STAR, hg19
+STAR \
+    --genomeDir ${GENOMEDIR} \
+    --readFilesIn galore/fastq_final_1_val_1.fq galore/fastq_final_2_val_2.fq \
+    --outFilterType BySJout \
+    --outFilterMultimapNmax 20 \
+    --alignSJoverhangMin 8 \
+    --alignSJDBoverhangMin 1 \
+    --outFilterMismatchNmax 999 \
+    --outFilterMismatchNoverLmax 0.04 \
+    --alignIntronMin 20 \
+    --alignIntronMax 1000000 \
+    --alignMatesGapMax 1000000 \
+    --outSAMstrandField intronMotif
+
+## SAM to BAM
+echo "SAM to BAM"
+samtools view -bS Aligned.out.sam > ${SRA}_unsorted.bam
+
+echo "Sort BAM"
+samtools sort ${SRA}_unsorted.bam ${SRA}
+
+echo "Create BAI file"
+samtools index ${SRA}.bam
+
+echo "HTSEQ count on HTFS"
+module load bzip2
+htseq-count \
+    -f bam \
+    -t BED_feature \
+    -i Name \
+    -m intersection-nonempty \
+    -s no \
+    ${SRA}.bam \
+    ${GFF_HTFS} \
+    >${SRA}.htseq.HTFS.count 2>${SRA}.htseq.HTFS.err
+
+htseq-count \
+    -f bam \
+    -t BED_feature \
+    -i Name \
+    -m intersection-nonempty \
+    -s no \
+    ${SRA}.bam \
+    ${GFF_UCSCFEB} \
+    >${SRA}.htseq.UCSCFEB.count 2>${SRA}.htseq.UCSCFEB.err
+
+ls -l
+
+## move to outdir
+echo "Move to outdir"
+cd ${ODIR}
+rm -r ${SRA}
+mkdir ${SRA}
+cd ${ODIR}/${SRA}
+
+mkdir galore
+cp ${WDIR}/${SRA}/galore/fastq_final_1.fastq_trimming_report.txt galore/
+cp ${WDIR}/${SRA}/galore/fastq_final_2.fastq_trimming_report.txt galore/
+
+mkdir fastqc
+cp ${WDIR}/${SRA}/qa/raw/fastq_prinseq_1_fastqc.zip fastqc/
+cp ${WDIR}/${SRA}/qa/raw/fastq_prinseq_2_fastqc.zip fastqc/
+
+mkdir star
+cp ${WDIR}/${SRA}/Log.out star/
+cp ${WDIR}/${SRA}/Log.final.out star/
+cp ${WDIR}/${SRA}/Log.progress.out star/
+cp ${WDIR}/${SRA}/SJ.out.tab star/
+cp ${WDIR}/${SRA}/${SRA}.bam .
+cp ${WDIR}/${SRA}/${SRA}.bam.bai .
+
+mkdir htseq
+cp ${WDIR}/${SRA}/${SRA}.htseq.HTFS.err htseq/
+cp ${WDIR}/${SRA}/${SRA}.htseq.UCSCFEB.err htseq/
+cp ${WDIR}/${SRA}/${SRA}.htseq.HTFS.count .
+cp ${WDIR}/${SRA}/${SRA}.htseq.UCSCFEB.count .
+
+
+## clean up
+echo "Clean up"
+cd ${WDIR}
+rm -r ${SRA}
+
+echo "Remove SRA in Home"
+rm ${HOME}/ncbi/public/sra/${SRA}.sra
+
+echo "Pipeline completed"
